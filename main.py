@@ -4,6 +4,8 @@ from pydantic import BaseModel
 from dotenv import load_dotenv 
 from openai import OpenAI
 import os
+import json
+import re
 
 
 load_dotenv()
@@ -12,6 +14,13 @@ app = FastAPI()
 class Diagnose(BaseModel):
     image_url: str
     crop: str
+    
+    
+class DiagnoseResponse(BaseModel):
+    disease_name : str
+    severity : int
+    description : str
+    treatment_steps : list[str]
     
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -29,7 +38,7 @@ def diagnose(dig:Diagnose):
     messages=[
         {
             "role": "system",
-            "content": "You are an expert agronomist who have knowledge on all the crops, the desieases that crops get and based on the crops disease stage tell what pestiside to use and why"   # your expert agronomist instruction here
+            "content":"You are an expert agronomist. Respond ONLY with a JSON object, no other text. The JSON must have exactly these fields: disease_name (string), severity (integer 1-5), description (string), treatment_steps (array of strings). No markdown, no explanation, just the raw JSON object."   # your expert agronomist instruction here
         },
         {
             "role": "user",
@@ -47,4 +56,9 @@ def diagnose(dig:Diagnose):
     ],
     max_tokens=1000
 )
-    return {"diagnosis": response.choices[0].message.content}
+    raw = response.choices[0].message.content
+    match = re.search(r'\{.*\}', raw, re.DOTALL)
+    raw = match.group() if match else raw
+    parsed = json.loads(raw)
+    return DiagnoseResponse(**parsed)
+
