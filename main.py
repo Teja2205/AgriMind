@@ -35,16 +35,42 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 def root():
     return {"Status":"ArigMind Test Api"}
 
-
+def check_image(image_url: str) -> str:
+    response = client.chat.completions.create(
+        model = "gpt-4o-mini",
+        messages= [{
+            "role": "system",
+            "content": f"you act as agronomist and use the image url{image_url} and check if the given image is a plant or not and if it is a plant you must check if it has a disease or not based on you observation you must give response saying DISEASED_PLANT, HEALTHY_PLANT, or NOT_A_PLANT "
+            },
+            {
+                "role": "user",
+                "content":[
+                     {"type": "text", "text": "Is this a plant with disease? Reply only: DISEASED_PLANT, HEALTHY_PLANT, or NOT_A_PLANT"},
+                     {"type": "image_url", "image_url": {"url": image_url}}
+                ]
+                
+            }]
+    )
+    return response.choices[0].message.content.strip()
 @app.post("/diagnose")
 def diagnose(dig:Diagnose):
+    check_result = check_image(dig.image_url)
+    if check_result == "NOT_A_PLANT":
+        return {"error": "Image is not a plant. Please upload a crop photo."}
+    if check_result == "HEALTHY_PLANT":
+        return {"error": "Plant appears healthy. No disease detected."}
+    
+    query_text = f"{dig.crop} common diseases symptoms treatment"
+    query_embedding = client.embeddings.create(
+    model="text-embedding-3-small",
+    input=query_text
+    ).data[0].embedding
     results = collection.query(
-    query_texts=[f"{dig.crop} common diseases symptoms treatment"],
-    n_results=3
-)
+    query_embeddings=[query_embedding],
+    n_results=3)
     context = "\n\n".join(results['documents'][0])
     sources = results['metadatas'][0]
-    sources = [s.get('source', 'unknown') for s in sources]
+    sources = [s.get('source', 'unknown') if s else 'unknown' for s in sources]
     response = client.chat.completions.create(
     model="gpt-4o",
     messages=[
@@ -69,6 +95,8 @@ def diagnose(dig:Diagnose):
     max_tokens=1000
 )
     raw = response.choices[0].message.content
+    print("RAW:", repr(raw))
+    raw = raw.strip()
     match = re.search(r'\{.*\}', raw, re.DOTALL)
     raw = match.group() if match else raw
     parsed = json.loads(raw)

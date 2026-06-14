@@ -5,6 +5,10 @@ from openai import OpenAI
 import os
 from dotenv import load_dotenv
 
+
+load_dotenv()
+
+
 pdf_files=['data/apple_diseases.pdf', 'data/Blueberry_diseases.pdf', 'data/disease_flower.pdf', 'data/Strawberry_diseases.pdf', 'data/Tomato_diseases.pdf']
 all_pages =[]
 for pdf in pdf_files:
@@ -19,7 +23,7 @@ print(len(chunks))
 
 client = chromadb.PersistentClient(path="./chroma_db")
 
-load_dotenv()
+
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 collection = client.get_or_create_collection(name = 'crop_diseases')
@@ -31,5 +35,6 @@ for i , chunk in enumerate(chunks):
     collection.add(
     ids=[str(i)],
     embeddings=[embedding],
-    documents=[chunk.page_content]
-    )
+    documents=[chunk.page_content],
+    metadatas=[{"source": chunk.metadata.get("source", "unknown")}]
+)
