@@ -6,10 +6,15 @@ from openai import OpenAI
 import os
 import json
 import re
+import chromadb
 
 
 load_dotenv()
 app = FastAPI()
+
+chroma_client = chromadb.PersistentClient(path="./chroma_db")
+collection = chroma_client.get_collection(name="crop_diseases")
+
 
 class Diagnose(BaseModel):
     image_url: str
@@ -21,7 +26,7 @@ class DiagnoseResponse(BaseModel):
     severity : int
     description : str
     treatment_steps : list[str]
-    
+    sources: list[str]
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -33,12 +38,19 @@ def root():
 
 @app.post("/diagnose")
 def diagnose(dig:Diagnose):
+    results = collection.query(
+    query_texts=[f"{dig.crop} common diseases symptoms treatment"],
+    n_results=3
+)
+    context = "\n\n".join(results['documents'][0])
+    sources = results['metadatas'][0]
+    sources = [s.get('source', 'unknown') for s in sources]
     response = client.chat.completions.create(
     model="gpt-4o",
     messages=[
         {
             "role": "system",
-            "content":"You are an expert agronomist. Respond ONLY with a JSON object, no other text. The JSON must have exactly these fields: disease_name (string), severity (integer 1-5), description (string), treatment_steps (array of strings). No markdown, no explanation, just the raw JSON object."   # your expert agronomist instruction here
+            "content": f"You are an expert agronomist. Use this reference material to inform your diagnosis:\n\n{context}\n\nRespond ONLY with a JSON object with exactly these fields: disease_name (string), severity (integer 1-5), description (string), treatment_steps (array of strings). No markdown, no explanation, just raw JSON."   # your expert agronomist instruction here
         },
         {
             "role": "user",
@@ -60,5 +72,7 @@ def diagnose(dig:Diagnose):
     match = re.search(r'\{.*\}', raw, re.DOTALL)
     raw = match.group() if match else raw
     parsed = json.loads(raw)
-    return DiagnoseResponse(**parsed)
+    return DiagnoseResponse(**parsed, sources = sources)
+
+
 
