@@ -7,23 +7,7 @@ from openai import OpenAI
 from dotenv import load_dotenv 
 import os
 import chromadb
-from gptcache import cache
-from gptcache.adapter import openai
-from gptcache.embedding import Onnx
-from gptcache.manager import CacheBase, VectorBase, get_data_manager
-from gptcache.similarity_evaluation.distance import SearchDistanceEvaluation
-
-
-onnx = Onnx()
-data_manager = get_data_manager(
-    CacheBase("sqlite"),
-    VectorBase("faiss", dimension=onnx.dimension)
-)
-cache.init(
-    embedding_func=onnx.to_embeddings,
-    data_manager=data_manager,
-    similarity_evaluation=SearchDistanceEvaluation()
-)
+import hashlib
 
 load_dotenv()
 class AgentState(TypedDict):
@@ -38,6 +22,12 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 chroma_client = chromadb.PersistentClient(path = "./chroma_db")
 collection = chroma_client.get_collection(name = "crop_diseases")
 reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+
+
+def get_cache_key(crop: str, image_url: str) -> str:
+    key = f"{crop}:{image_url}"
+    return hashlib.md5(key.encode()).hexdigest()
+cache_store = {}
 
 def check_image(image_url: str) -> str:
     response = client.chat.completions.create(
@@ -83,7 +73,20 @@ def get_context_node(state : AgentState) -> dict:
     return {"context": context, "sources": sources}
     
 def diagnose_node(state : AgentState) -> dict :
-    """Calls GPT-4o with RAG context to diagnose the crop disease and return structured JSON."""
+    
+    cache_key = get_cache_key(state["crop"], state["image_url"])
+    if cache_key in cache_store:
+        print("CACHE HIT — returning cached diagnosis")
+        return {"diagnosis": cache_store[cache_key]}
+    if state['image_url']:
+        user_content = [
+        {"type": "text", "text": f"look at the image of a {state['crop']} and analyse the condition"},
+        {"type": "image_url", "image_url": {"url": state['image_url']}}
+    ]
+    else:
+        user_content = [
+        {"type": "text", "text": f"Based ONLY on the reference material provided, diagnose common diseases in {state['crop']} and provide treatment steps. Do not use any knowledge outside the provided context."}
+    ]
     
     response = client.chat.completions.create(
     model="gpt-4o",
@@ -94,16 +97,20 @@ def diagnose_node(state : AgentState) -> dict :
         },
         {
             "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": f"look at the image  of a {state['crop']} and analyse the condition of the crop and give what the are best pesticides and minimal quantity of pesticide that i can use for the crop to have max crop"  # your sentence using dig.crop
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {"url": state['image_url']}  # use dig.image_url here
-                }
-            ]
+            "content": (
+                [
+                    {
+                        "type": "text",
+                        "text": f"look at the image of a {state['crop']} and analyse the condition of the crop and give what the are best pesticides and minimal quantity of pesticide that i can use for the crop to have max crop"
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": state['image_url']}
+                    }
+                ]
+                if state.get("image_url")
+                else f"Analyse the condition of a {state['crop']} crop and give the best pesticides and minimal quantity to use for maximum yield."
+            )
         }
     ],
     max_tokens=1000
@@ -114,6 +121,7 @@ def diagnose_node(state : AgentState) -> dict :
     match = re.search(r'\{.*\}', raw, re.DOTALL)
     raw = match.group() if match else raw
     parsed = json.loads(raw)
+    cache_store[cache_key] = parsed
     return {"diagnosis": parsed}
 
 def route_after_check(state: AgentState) -> str:
@@ -135,6 +143,31 @@ workflow.set_entry_point("check_image")
 workflow.add_conditional_edges("check_image", route_after_check)
 workflow.add_edge("get_context", "diagnose")
 workflow.add_edge("diagnose", END)
+
+def run_eval(question: str, crop: str) -> dict:
+    """Runs evaluation without image check — for RAGAS testing only."""
+    context_result = get_context_node({
+        "image_url": "",
+        "crop": crop,
+        "check_result": "DISEASED_PLANT",
+        "context": "",
+        "sources": [],
+        "diagnosis": {}
+    })
+    
+    diagnose_result = diagnose_node({
+        "image_url": "",
+        "crop": crop,
+        "check_result": "DISEASED_PLANT",
+        "context": context_result["context"],
+        "sources": context_result["sources"],
+        "diagnosis": {}
+    })
+    
+    return {
+        "answer": str(diagnose_result["diagnosis"]),
+        "contexts": context_result["sources"]
+    }
 
 # Compile
 agent = workflow.compile()
