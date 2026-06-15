@@ -1,11 +1,29 @@
 from langgraph.graph import StateGraph, END
 from typing import TypedDict
 import re
+from sentence_transformers import CrossEncoder
 import json
 from openai import OpenAI
 from dotenv import load_dotenv 
 import os
 import chromadb
+from gptcache import cache
+from gptcache.adapter import openai
+from gptcache.embedding import Onnx
+from gptcache.manager import CacheBase, VectorBase, get_data_manager
+from gptcache.similarity_evaluation.distance import SearchDistanceEvaluation
+
+
+onnx = Onnx()
+data_manager = get_data_manager(
+    CacheBase("sqlite"),
+    VectorBase("faiss", dimension=onnx.dimension)
+)
+cache.init(
+    embedding_func=onnx.to_embeddings,
+    data_manager=data_manager,
+    similarity_evaluation=SearchDistanceEvaluation()
+)
 
 load_dotenv()
 class AgentState(TypedDict):
@@ -19,6 +37,7 @@ class AgentState(TypedDict):
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 chroma_client = chromadb.PersistentClient(path = "./chroma_db")
 collection = chroma_client.get_collection(name = "crop_diseases")
+reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
 def check_image(image_url: str) -> str:
     response = client.chat.completions.create(
@@ -52,10 +71,15 @@ def get_context_node(state : AgentState) -> dict:
     ).data[0].embedding
     results = collection.query(
     query_embeddings=[query_embedding],
-    n_results=3)
-    context = "\n\n".join(results['documents'][0])
-    sources = results['metadatas'][0]
-    sources = [s.get('source', 'unknown') if s else 'unknown' for s in sources]
+    n_results=10)
+    docs = results['documents'][0]
+    pairs = [[query_text, doc] for doc in docs]
+    scores = reranker.predict(pairs)
+    metadatas = results['metadatas'][0]
+    ranked = sorted(zip(scores, docs, metadatas), reverse=True)
+    top_docs = [doc for score, doc, meta in ranked[:3]]
+    context = "\n\n".join(top_docs)
+    sources = [meta.get('source', 'unknown') if meta else 'unknown' for score, doc, meta in ranked[:3]]
     return {"context": context, "sources": sources}
     
 def diagnose_node(state : AgentState) -> dict :
