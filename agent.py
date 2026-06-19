@@ -168,6 +168,44 @@ def run_eval(question: str, crop: str) -> dict:
         "answer": str(diagnose_result["diagnosis"]),
         "contexts": context_result["sources"]
     }
+    
+def stream_diagnosis(state : AgentState):
+    """Streams GPT-4o diagnosis token by token for real-time response."""
+    response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[
+        {
+            "role": "system",
+            "content": f"You are an expert agronomist. Use this reference material to inform your diagnosis:\n\n{state['context']}\n\nProvide a clear, detailed diagnosis including: disease name, severity, description, and treatment steps with specific pesticide quantities. Write in plain English, not JSON."   # your expert agronomist instruction here
+        },
+        {
+            "role": "user",
+            "content": (
+                [
+                    {
+                        "type": "text",
+                        "text": f"look at the image of a {state['crop']} and analyse the condition of the crop and give what the are best pesticides and minimal quantity of pesticide that i can use for the crop to have max crop"
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": state['image_url']}
+                    }
+                ]
+                if state.get("image_url")
+                else f"Analyse the condition of a {state['crop']} crop and give the best pesticides and minimal quantity to use for maximum yield."
+            )
+        }
+    ],
+    stream = True,
+    max_tokens=1000
+)
+    for chunk in response:
+        token = chunk.choices[0].delta.content
+        if token:
+            yield token
+
+    
 
 # Compile
 agent = workflow.compile()
+    
