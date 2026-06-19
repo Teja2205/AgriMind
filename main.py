@@ -3,8 +3,9 @@ from typing import Optional
 from pydantic import BaseModel
 from dotenv import load_dotenv 
 from fastapi.responses import StreamingResponse
-from agent import stream_diagnosis, AgentState
 from agent import agent, stream_diagnosis, AgentState, check_image, get_context_node
+from fastapi import Header, HTTPException, Depends
+import os
 
 load_dotenv()
 app = FastAPI()
@@ -19,13 +20,19 @@ class DiagnoseResponse(BaseModel):
     treatment_steps : list[str]
     sources: list[str]
 
-
+def verify_api_key(x_api_key: str = Header(...)):
+    key = os.getenv("AGRIMIND_API_KEY")
+    if x_api_key == key:
+        return True
+    else:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    
 @app.get("/")
 def root():
     return {"Status":"ArigMind Test Api"}
 
 @app.post("/diagnose")
-def diagnose(dig: Diagnose):
+def diagnose(dig: Diagnose, api_key: bool = Depends(verify_api_key)):
     result = agent.invoke({
         "image_url": dig.image_url,
         "crop": dig.crop,
@@ -43,7 +50,7 @@ def diagnose(dig: Diagnose):
     return DiagnoseResponse(**diagnosis)
 
 @app.post("/diagnose/stream")
-def diagnose_stream(dig: Diagnose):
+def diagnose_stream(dig: Diagnose, api_key: bool = Depends(verify_api_key)):
     
     check_result = check_image(dig.image_url)
     

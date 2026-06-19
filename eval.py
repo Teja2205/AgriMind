@@ -7,6 +7,7 @@ from ragas import RunConfig
 from ragas.llms import LangchainLLMWrapper
 from ragas.embeddings import LangchainEmbeddingsWrapper
 
+
 llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-4o-mini"))
 embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings(model="text-embedding-3-small"))
 golden_dataset = [
