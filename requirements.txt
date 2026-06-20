@@ -13,3 +13,4 @@ ragas
 langchain-openai
 langchain-google-vertexai
 datasets
+mcp
