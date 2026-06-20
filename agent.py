@@ -7,7 +7,10 @@ from openai import OpenAI
 from dotenv import load_dotenv 
 import os
 import chromadb
+import asyncio
 import hashlib
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 load_dotenv()
 class AgentState(TypedDict):
@@ -17,6 +20,18 @@ class AgentState(TypedDict):
      context: str
      sources: list[str]
      diagnosis: dict
+     
+async def call_farmos_tool(tool_name: str, arguments: dict) -> dict:
+    """Call a FarmOS MCP tool and return the result."""
+    server_params = StdioServerParameters(
+        command="/Users/tejaguduguntla/ai-fullstack-course/farmos-mcp/.venv/bin/python",
+        args=["/Users/tejaguduguntla/ai-fullstack-course/farmos-mcp/server.py"]
+    )
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(tool_name, arguments)
+            return result.content[0].text
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 chroma_client = chromadb.PersistentClient(path = "./chroma_db")
@@ -52,25 +67,46 @@ def check_image_node(state : AgentState) -> dict:
     result = check_image(state["image_url"])  # call the function
     return {"check_result": result}   
     
-def get_context_node(state : AgentState) -> dict:
-    """Queries ChromaDB with the crop type to retrieve relevant disease context and sources."""
+def get_context_node(state: AgentState) -> dict:
+    """Queries FarmOS MCP and ChromaDB to build full field context."""
+    
+    # Step 1 — get field context from FarmOS MCP
+    try:
+        farmos_context = asyncio.run(call_farmos_tool(
+            "get_field_context",
+            {
+                "lat": 40.7128,
+                "lon": -74.0060,
+                "crop": state["crop"],
+                "state": "California"
+            }
+        ))
+    except Exception as e:
+        farmos_context = f"Field context unavailable: {str(e)}"
+    
+    # Step 2 — query ChromaDB
     query_text = f"{state['crop']} common diseases symptoms treatment"
     query_embedding = client.embeddings.create(
-    model="text-embedding-3-small",
-    input=query_text
+        model="text-embedding-3-small",
+        input=query_text
     ).data[0].embedding
     results = collection.query(
-    query_embeddings=[query_embedding],
-    n_results=10)
+        query_embeddings=[query_embedding],
+        n_results=10
+    )
     docs = results['documents'][0]
     pairs = [[query_text, doc] for doc in docs]
     scores = reranker.predict(pairs)
     metadatas = results['metadatas'][0]
     ranked = sorted(zip(scores, docs, metadatas), reverse=True)
     top_docs = [doc for score, doc, meta in ranked[:3]]
-    context = "\n\n".join(top_docs)
+    rag_context = "\n\n".join(top_docs)
     sources = [meta.get('source', 'unknown') if meta else 'unknown' for score, doc, meta in ranked[:3]]
-    return {"context": context, "sources": sources}
+    
+    # Step 3 — combine both contexts
+    combined_context = f"FIELD CONDITIONS:\n{farmos_context}\n\nDISEASE REFERENCE:\n{rag_context}"
+    
+    return {"context": combined_context, "sources": sources}
     
 def diagnose_node(state : AgentState) -> dict :
     
